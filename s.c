@@ -86,7 +86,6 @@ int main(int argc, char *argv[]) {
 	if(lret < 0)
 		perror("error in listen");
 	int efd = epoll_create(20);
-	printf("EFD in main %d\n", efd);
 	if(efd < 0)
 		perror("epoll_create");
 	struct epoll_event ev, evlist[MAX_EVENTS];
@@ -97,15 +96,6 @@ int main(int argc, char *argv[]) {
 	}
 	while(1) {
 		struct my_msgbuf msg;
-		// if(msgrcv(msqid, &msg, sizeof(msg), 4, IPC_NOWAIT) == 0) {
-		// 	ev.events = EPOLLOUT;
-		// 	ev.data.fd = msg.fd;
-		// 	//ev.data.ptr = (char *) malloc (sizeof(char) * MSG_SIZE);
-		// 	strcpy(ev.data.ptr, msg.mtext);
-		// 	int eret = epoll_ctl(efd, EPOLL_CTL_ADD, msg.fd, &ev);
-		// 	if(eret < 0)
-		// 		perror("epoll_ctl write error ");
-		// }
 		int ready = epoll_wait(efd, evlist, MAX_EVENTS, -1);
 		if(ready == -1){
 			if(errno == EINTR)
@@ -124,9 +114,9 @@ int main(int argc, char *argv[]) {
 					int eret = epoll_ctl(efd, EPOLL_CTL_ADD, cfd , &ev);
 					if(eret < 0)
 						perror("Epoll add error");
-					char ip[128];
-					inet_ntop (AF_INET, &(claddr.sin_addr), ip, 128);
-					printf("Got client %s:%d \n", ip, ntohs (claddr.sin_port));
+	//				char ip[128];
+	//				inet_ntop (AF_INET, &(claddr.sin_addr), ip, 128);
+	//				printf("Got client %s:%d \n", ip, ntohs (claddr.sin_port));
 				}
 
 				else {								// when server rcvs and gives the msg to READY
@@ -136,15 +126,11 @@ int main(int argc, char *argv[]) {
 					msg.fd = evlist[i].data.fd;
 					ev.data.fd = msg.fd;
 					ev.events = EPOLLIN;
-					// int rmret = epoll_ctl(efd, EPOLL_CTL_DEL, msg.fd, &ev);
-					// if(rmret < 0)
-					// 	perror("Main: remove error");
 					msgsnd(msqid,&(msg),sizeof(msg),0);
 					
 				}
 			}
 			else if(evlist[i].events & EPOLLOUT) {	//add in msgqueue
-				printf("in Epollout\n");
 				struct epoll_event ev;
 				ev.data.fd = evlist[i].data.fd;
 				ev.events = EPOLLOUT;
@@ -154,9 +140,7 @@ int main(int argc, char *argv[]) {
 				struct my_msgbuf msg;
 				msg.fd = evlist[i].data.fd;
 				struct my_msgbuf msg2;
-				// strcpy(msg.mtext, evlist[i].data.ptr);
 				msgrcv(msqid, &msg2, sizeof(msg2), 4 + msg.fd, 0);
-				// printf("");
 				msg2.mtype = 3;		//write
 				msg2.fd = msg.fd;
 				msgsnd(msqid, &msg2, sizeof(msg2), 0);
@@ -183,12 +167,10 @@ void writeMessages(int msqid) {
 			perror("writeMsgs: msgrcv error");
 			break;
 		}
-		printf("Write: fd=%d, data=%s\n", msg.fd, msg.mtext);
 		int len = strlen(msg.mtext);
 		msg.mtext[len] = '\n';
 		msg.mtext[len + 1] = '\0';
 		int w = write(msg.fd, msg.mtext, strlen(msg.mtext));	//write to socket
-		printf("written\n");
 		if(w < 0)
 			perror("socket write");
 	}
@@ -197,29 +179,21 @@ void writeMessages(int msqid) {
 void readMessages(int msqid){
 	struct my_msgbuf msg;
 	while(1){
-		printf("In readMsgs [msgrcv]\n");
-		// printf("Before msgrcv\n");
 		int recv = msgrcv(msqid,&(msg),sizeof(msg),1,IPC_NOWAIT);//get type 1 messages
-		printf("readMsgs: after msgrcv\n");
 		if(recv ==-1 && errno == ENOMSG){
-			//perror("Msgrcv error");
 			break;
 		}
 		else if(recv < 0) {
-			perror("writeMsgs: msgrcv error");
+			perror("readMsgs: msgrcv error");
 			break;
-		}// printf("After msgrcv\n");
+		}
 		int r;
 		memset(msg.mtext,0,MSG_SIZE);
-		printf("readMsgs ");
 		r = read(msg.fd,msg.mtext,MSG_SIZE);
-		//printf("after read\n");
 		if(r < 0)
 			perror("read error");
 		if(r == 0)
 			printf("No bytes read\n");
-		else
-			printf("msg read from socket = %s\n",msg.mtext);
 		msg.mtype=2;	
 		msgsnd(msqid,&(msg),sizeof(msg),0);	//send message type=2 for processing
 	}
@@ -239,9 +213,6 @@ Client processMessages(int msqid, int efd,Client head){
 			perror("writeMsgs: msgrcv error");
 			break;
 		}
-		printf("After msgrcv, msg.mtext=%s\n", msg.mtext);
-		//decode it JOIN,UMSG,BMSG,LEAV and set EPOLLOUT for the fds
-
 		int i=0;
 		char buf[5];
 		strncpy(buf,msg.mtext,4);
@@ -250,7 +221,6 @@ Client processMessages(int msqid, int efd,Client head){
 		if(strcmp(buf,"JOIN")==0){
 			char name[MAX_NAME];
 			sscanf(msg.mtext, "%s %s", buf, name);
-			printf("Join is called with name=%s and fd=%d\n", name, msg.fd);
 			char retmsg[100];
 			head = addClient(head,name,msg.fd, retmsg);
 			strcpy(msg.mtext,retmsg);
@@ -260,31 +230,31 @@ Client processMessages(int msqid, int efd,Client head){
 		else if(strcmp(buf,"LIST")==0){
 			char *list_msg = (char*)malloc(sizeof(char) * MSG_SIZE);
 			list_msg[0] = '\0';
+			sprintf(list_msg,"List of all online users:\n");
 			temp=head;
-			printf("Inside LIST\n");
 			char toAdd[100];
 			while(temp!=NULL){
-				printf("temp->name =%s\n",temp->name);
-				sprintf(toAdd, "%s\n", temp->name);
+				sprintf(toAdd, "%s\t", temp->name);
 				strcat(list_msg,toAdd);
 				temp=temp->next;
 			}
-			printf("Concated list=%s\n", list_msg);
+			printf("Retrieving the list of all online users\n");
 			ev.data.fd = msg.fd;
 			strcpy(msg.mtext, list_msg);
 			msg.mtype = ev.data.fd+4;
 		}
 		else if(strcmp(buf,"UMSG")==0){
 			int toSelf=0;
-			Client cli = findClientbyfd(head, msg.fd);
+			Client sender = findClientbyfd(head, msg.fd);
 			char tname[MAX_NAME], umsg[MAX_NAME];
 			sscanf(msg.mtext, "%s %s %[^\n]", buf, tname, umsg);
-			strcpy(msg.mtext, umsg);
-			if(cli==NULL){
+			sprintf(msg.mtext,"[%s]->",sender->name);
+			strcat(msg.mtext, umsg);
+			if(sender==NULL){
 				strcpy(msg.mtext, "You haven't joined a group");
 				toSelf = 1;
 			}
-			cli = findClientbyName(head,tname);
+			Client cli = findClientbyName(head,tname);
 			if(toSelf == 0 && cli==NULL){
 				printf("Client %s is not online\n",tname);
 				sprintf(msg.mtext, "Client %s is not online", umsg);
@@ -295,6 +265,7 @@ Client processMessages(int msqid, int efd,Client head){
 				ev.data.fd = msg.fd;
 			}
 			else{	//send to user
+				printf("UMSG from %s to %s\n",sender->name, cli->name);
 				msg.mtype = cli->fd + 4;
 				ev.data.fd = cli->fd;
 			}
@@ -309,7 +280,8 @@ Client processMessages(int msqid, int efd,Client head){
 			continue;
 		}
 		else if(strcmp(buf,"BMSG")==0){
-			if(findClientbyfd(head, msg.fd) == NULL) {
+			Client cli = findClientbyfd(head,msg.fd);
+			if(cli == NULL) {
 				memset(msg.mtext, 0, MSG_SIZE);
 				strcpy(msg.mtext, "You haven't joined a group");
 				msg.mtype = 4+msg.fd;
@@ -323,19 +295,20 @@ Client processMessages(int msqid, int efd,Client head){
 				continue;
 			}
 			char bmsg[MSG_SIZE];
+			memset(bmsg,0,MSG_SIZE);
 			sscanf(msg.mtext, "%s %[^\n]", buf, bmsg);
 			temp=head;
 			char retmsg[MSG_SIZE];
 			memset(retmsg, 0, sizeof(retmsg));
-			strcpy(msg.mtext, bmsg);
+			sprintf(msg.mtext,"[%s]->",cli->name);
+			strcat(msg.mtext, bmsg);
+			printf("BMSG from client %s\n", cli->name);
 			while(temp!=NULL){	
 				if(temp->fd==msg.fd){
 					temp=temp->next;
 					continue;
 				}
-				printf("BMSG Stuff: fd=%d bmsg=%s\n", temp->fd, bmsg);
 				
-				// msg.fd = temp->fd+4;
 				ev.data.fd = temp->fd;
 				msg.mtype = temp->fd+4;
 				int ctlret = epoll_ctl(efd, EPOLL_CTL_DEL, temp->fd, &ev);
@@ -351,7 +324,13 @@ Client processMessages(int msqid, int efd,Client head){
 		else if(strcmp(buf,"LEAV")==0) {
 			if(findClientbyfd(head, msg.fd) == NULL) {
 				strcpy(msg.mtext, "You are not online");
-				msg.mtype = 3;
+				msg.mtype = 4+msg.fd;
+				ev.data.fd = msg.fd;
+				int ctlret = epoll_ctl(efd, EPOLL_CTL_DEL, ev.data.fd, &ev);
+				if(ctlret < 0)
+					perror("296 ctlrmerror");
+				ev.events |= EPOLLOUT;
+				int eret = epoll_ctl(efd, EPOLL_CTL_ADD, ev.data.fd, &ev);
 				msgsnd(msqid, &msg, sizeof(msg), 0);
 				continue;
 			}
@@ -360,6 +339,25 @@ Client processMessages(int msqid, int efd,Client head){
 			strcpy(msg.mtext, retmsg);
 			ev.data.fd = msg.fd;
 			msg.mtype = msg.fd+4;
+		}
+		else{
+			Client cli = findClientbyfd(head,msg.fd);
+			if(cli == NULL) 
+				strcpy(msg.mtext, "You are not online");
+			else{
+				char *text = strdup(msg.mtext);
+				strcpy(msg.mtext, "Message not recognized");
+			}
+			msg.mtype = 4+msg.fd;
+			ev.data.fd = msg.fd;
+			int ctlret = epoll_ctl(efd, EPOLL_CTL_DEL, ev.data.fd, &ev);
+			if(ctlret < 0)
+				perror("296 ctlrmerror");
+			ev.events |= EPOLLOUT;
+			int eret = epoll_ctl(efd, EPOLL_CTL_ADD, ev.data.fd, &ev);
+			msgsnd(msqid, &msg, sizeof(msg), 0);
+			printf("Message not recognized\n");
+			continue;
 		}
 		int ctlret = epoll_ctl(efd, EPOLL_CTL_DEL, ev.data.fd, &ev);
 		if(ctlret < 0)
@@ -450,50 +448,3 @@ Client deleteClientbyfd(Client head,int fd,char retmsg[100]){
 	return head;
 }
 
-/*
-void send_fd(int socket, int *fds, int n)  // send fd by socket
-{
-        struct msghdr msg = {0};
-        struct cmsghdr *cmsg;
-        char buf[CMSG_SPACE(n * sizeof(int))], dup[256];
-        memset(buf, ‘\0’, sizeof(buf));
-        struct iovec io = { .iov_base = &dup, .iov_len = sizeof(dup) };
-
-        msg.msg_iov = &io;
-        msg.msg_iovlen = 1;
-        msg.msg_control = buf;
-        msg.msg_controllen = sizeof(buf);
-
-        cmsg = CMSG_FIRSTHDR(&msg);
-        cmsg->cmsg_level = SOL_SOCKET;
-        cmsg->cmsg_type = SCM_RIGHTS;
-        cmsg->cmsg_len = CMSG_LEN(n * sizeof(int));
-
-        memcpy ((int *) CMSG_DATA(cmsg), fds, n * sizeof (int));
-
-        if (sendmsg (socket, &msg, 0) < 0)
-                handle_error (“Failed to send message”);
-}*/
-/*
-int * recv_fd(int socket, int n) {
-        int *fds = malloc (n * sizeof(int));
-        struct msghdr msg = {0};
-        struct cmsghdr *cmsg;
-        char buf[CMSG_SPACE(n * sizeof(int))], dup[256];
-        memset(buf, ‘\0’, sizeof(buf));
-        struct iovec io = { .iov_base = &dup, .iov_len = sizeof(dup) };
-
-        msg.msg_iov = &io;
-        msg.msg_iovlen = 1;
-        msg.msg_control = buf;
-        msg.msg_controllen = sizeof(buf);
-
-        if (recvmsg (socket, &msg, 0) < 0)
-                handle_error (“Failed to receive message”);
-
-        cmsg = CMSG_FIRSTHDR(&msg);
-
-        memcpy (fds, (int *) CMSG_DATA(cmsg), n * sizeof(int));
-
-        return fds;
-}*/
