@@ -18,9 +18,9 @@
 #include <unistd.h>
 
 #define MSGQ_PATH "key.h"
-#define MSG_SIZE 2000
+#define MSG_SIZE 50
 #define MAX_EVENTS 10
-#define CLIENT_SIZE 20
+#define CLIENT_SIZE 20	
 #define MAX_NAME 30
 
 typedef struct my_msgbuf{
@@ -37,7 +37,7 @@ struct client{
 
 typedef struct client *Client;
 
-void readMessages(int msqid);
+void readMessages(int efd,int msqid);
 void writeMessages(int msqid);
 Client processMessages(int msqid,int efd,Client head);
 Client addClient(Client head,char *name,int fd, char retmsg[100]);
@@ -64,7 +64,13 @@ int main(int argc, char *argv[]) {
         perror("msgget");
         exit(1);
     }
-
+	// struct msqid_ds buf;
+	// int ret = msgctl (msqid, IPC_STAT, &buf);
+	// buf.msg_qbytes = 100000;
+	// ret = msgctl (msqid, IPC_SET, &buf);
+	// if(ret<0){
+	// 	perror("msgq");
+	// }
 	struct sockaddr_in claddr, servaddr;
 	Client head=NULL;
 	int clilen;
@@ -114,9 +120,9 @@ int main(int argc, char *argv[]) {
 					int eret = epoll_ctl(efd, EPOLL_CTL_ADD, cfd , &ev);
 					if(eret < 0)
 						perror("Epoll add error");
-	//				char ip[128];
-	//				inet_ntop (AF_INET, &(claddr.sin_addr), ip, 128);
-	//				printf("Got client %s:%d \n", ip, ntohs (claddr.sin_port));
+					char ip[128];
+					inet_ntop (AF_INET, &(claddr.sin_addr), ip, 128);
+					printf("Got client %s:%d \n", ip, ntohs (claddr.sin_port));
 				}
 
 				else {								// when server rcvs and gives the msg to READY
@@ -142,13 +148,13 @@ int main(int argc, char *argv[]) {
 				struct my_msgbuf msg2;
 				msgrcv(msqid, &msg2, sizeof(msg2), 4 + msg.fd, 0);
 				msg2.mtype = 3;		//write
-				msg2.fd = msg.fd;
+				msg2.fd = evlist[i].data.fd;
 				msgsnd(msqid, &msg2, sizeof(msg2), 0);
 			}
 			
 		}
 		//after iterating all events
-		readMessages(msqid);
+		readMessages(efd,msqid);
 		head = processMessages(msqid,efd,head);
 		writeMessages(msqid);
 	}
@@ -176,8 +182,9 @@ void writeMessages(int msqid) {
 	}
 }
 
-void readMessages(int msqid){
+void readMessages(int efd,int msqid){
 	struct my_msgbuf msg;
+	struct epoll_event ev;
 	while(1){
 		int recv = msgrcv(msqid,&(msg),sizeof(msg),1,IPC_NOWAIT);//get type 1 messages
 		if(recv ==-1 && errno == ENOMSG){
@@ -190,10 +197,17 @@ void readMessages(int msqid){
 		int r;
 		memset(msg.mtext,0,MSG_SIZE);
 		r = read(msg.fd,msg.mtext,MSG_SIZE);
-		if(r < 0)
-			perror("read error");
-		if(r == 0)
-			printf("No bytes read\n");
+		//if(r < 0)
+			//perror("read error");
+		if(r == 0){
+			printf("FIN Received\n");
+			//close(msg.fd);
+			shutdown(msg.fd,SHUT_RD);
+			ev.data.fd = msg.fd;
+			ev.events=EPOLLIN;
+			int ctlret = epoll_ctl(efd, EPOLL_CTL_DEL, ev.data.fd, &ev);
+			break;
+		}
 		msg.mtype=2;	
 		msgsnd(msqid,&(msg),sizeof(msg),0);	//send message type=2 for processing
 	}
@@ -246,18 +260,19 @@ Client processMessages(int msqid, int efd,Client head){
 		else if(strcmp(buf,"UMSG")==0){
 			int toSelf=0;
 			Client sender = findClientbyfd(head, msg.fd);
+			if(sender==NULL){
+				strcpy(msg.mtext, "You haven't joined a group");
+				toSelf = 1;
+				break;
+			}
 			char tname[MAX_NAME], umsg[MAX_NAME];
 			sscanf(msg.mtext, "%s %s %[^\n]", buf, tname, umsg);
 			sprintf(msg.mtext,"[%s]->",sender->name);
 			strcat(msg.mtext, umsg);
-			if(sender==NULL){
-				strcpy(msg.mtext, "You haven't joined a group");
-				toSelf = 1;
-			}
 			Client cli = findClientbyName(head,tname);
 			if(toSelf == 0 && cli==NULL){
 				printf("Client %s is not online\n",tname);
-				sprintf(msg.mtext, "Client %s is not online", umsg);
+				sprintf(msg.mtext, "Client %s is not online", tname);
 				toSelf = 1;
 			}
 			if(toSelf == 1){//send to itself
@@ -304,10 +319,10 @@ Client processMessages(int msqid, int efd,Client head){
 			strcat(msg.mtext, bmsg);
 			printf("BMSG from client %s\n", cli->name);
 			while(temp!=NULL){	
-				if(temp->fd==msg.fd){
-					temp=temp->next;
-					continue;
-				}
+				// if(temp->fd==msg.fd){
+				// 	temp=temp->next;
+				// 	continue;
+				// }
 				
 				ev.data.fd = temp->fd;
 				msg.mtype = temp->fd+4;
@@ -346,7 +361,7 @@ Client processMessages(int msqid, int efd,Client head){
 				strcpy(msg.mtext, "You are not online");
 			else{
 				char *text = strdup(msg.mtext);
-				strcpy(msg.mtext, "Message not recognized");
+				sprintf(msg.mtext, "Command %s not recognized",buf);
 			}
 			msg.mtype = 4+msg.fd;
 			ev.data.fd = msg.fd;
@@ -356,7 +371,8 @@ Client processMessages(int msqid, int efd,Client head){
 			ev.events |= EPOLLOUT;
 			int eret = epoll_ctl(efd, EPOLL_CTL_ADD, ev.data.fd, &ev);
 			msgsnd(msqid, &msg, sizeof(msg), 0);
-			printf("Message not recognized\n");
+			if(strlen(buf)!=0)
+				printf("Command %s not recognized\n",buf);
 			continue;
 		}
 		int ctlret = epoll_ctl(efd, EPOLL_CTL_DEL, ev.data.fd, &ev);
@@ -381,14 +397,14 @@ Client addClient(Client head,char *name,int fd,char retmsg[100]){	//makes client
 	}
 	Client x = findClientbyName(head,name);
 	Client y = findClientbyfd(head,fd);
-	if(x != NULL){
-		printf("Client %s already joined\n",name);
-		sprintf(retmsg, "There is already a user with name %s", name);
+	if(y != NULL){
+		printf("This terminal already has a client %s\n",y->name);
+		sprintf(retmsg, "This terminal already has a client with name %s", y->name);
 		return head;
 	}
-	else if(y != NULL){
+	else if(x != NULL){
 		printf("Client %s already joined\n",name);
-		sprintf(retmsg, "This terminal already has a client with name %s", y->name);
+		sprintf(retmsg, "There is already a user with name %s", name);
 		return head;
 	}
 	printf("Client %s joined\n",name);
@@ -428,7 +444,7 @@ Client deleteClientbyfd(Client head,int fd,char retmsg[100]){
 	Client prev,temp=head;
 	if(head->fd==fd){	//if fd in first node
 		temp=head->next;
-		printf("Client %s left group d\n",head->name);
+		printf("Client %s left group \n",head->name);
 		strcpy(retmsg,"You left the group");
 		free(head);
 		return temp;
@@ -437,7 +453,7 @@ Client deleteClientbyfd(Client head,int fd,char retmsg[100]){
 	while(temp!=NULL ){
 		if(temp->fd==fd){	//if in middle node
 			prev->next=temp->next;
-			printf("Client %s left group d\n",temp->name);
+			printf("Client %s left group \n",temp->name);
 			strcpy(retmsg,"You left the group");
 			free(temp);
 			return head;
@@ -447,4 +463,3 @@ Client deleteClientbyfd(Client head,int fd,char retmsg[100]){
 	}
 	return head;
 }
-
